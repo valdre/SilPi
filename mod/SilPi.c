@@ -32,7 +32,6 @@ MODULE_LICENSE("GPL v2");
 #define FATAL(frm,...) printk(KERN_ALERT "%s:%s - " frm, HERE, ##__VA_ARGS__ )
 #define DEBUG(frm,...) if(debug) printk(KERN_ALERT "%s:%s - " frm, HERE, ##__VA_ARGS__ )
 #define BASE_MINOR 0
-#define SIZE 50000
 #define EVENTSIZE sizeof(struct Silevent)
 
 // FSM states
@@ -313,7 +312,7 @@ ssize_t read(struct file *filp, char *buf, const size_t count, loff_t *ppos) {
 	struct driver_data *ddata = filp->private_data;
 	struct Silevent *events = ddata->events;
 	
-	DEBUG("requested %d bytes.\n", count);
+	DEBUG("requested %lu bytes.\n", (unsigned long)count);
 	
 	read_idx  = atomic_read(&(ddata->a_read_idx));
 	write_idx = atomic_read(&(ddata->a_write_idx));
