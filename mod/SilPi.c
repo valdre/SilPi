@@ -96,14 +96,6 @@ void read_event(struct driver_data *ddata) {
 	}
 	if((val^=0x1fff) < 2) val = 2;
 	
-	// start of acknowledgement signal
-	gpio_set_value(ACK, 1);
-	
-	udelay(1);
-	
-	// end of acknowledgement signal
-	gpio_set_value(ACK, 0);
-	
 	ddata->val = (uint16_t)val;
 	ddata->state = SILPI_EVNT;
 	return;
@@ -147,7 +139,7 @@ irqreturn_t irq_service(int irq, void *arg) {
 				if(gpio_lve) {
 					FATAL("Bad LVE transition detected (state = %d, LVE = %d RDY = %d)\n", ddata->state, gpio_lve, gpio_rdy);
 					ddata->errcnt++;
-					break;
+					return IRQ_WAKE_THREAD;
 				}
 				ddata->lt1 = ts;
 				ddata->state = SILPI_DEAD;
@@ -157,7 +149,7 @@ irqreturn_t irq_service(int irq, void *arg) {
 				if(gpio_lve == 0) {
 					FATAL("Bad LVE transition detected (state = %d, LVE = %d RDY = %d)\n", ddata->state, gpio_lve, gpio_rdy);
 					ddata->errcnt++;
-					break;
+					return IRQ_WAKE_THREAD;
 				}
 				ddata->lt2 = ts;
 				fill_event(ddata);
@@ -168,6 +160,7 @@ irqreturn_t irq_service(int irq, void *arg) {
 				FATAL("Bad LVE transition detected (state = %d, LVE = %d RDY = %d)\n", ddata->state, gpio_lve, gpio_rdy);
 				ddata->errcnt++;
 				ddata->state = SILPI_IDLE;
+				return IRQ_WAKE_THREAD;
 		}
 		return IRQ_HANDLED;
 	}
@@ -178,7 +171,6 @@ irqreturn_t irq_service(int irq, void *arg) {
 				if(gpio_rdy == 1) {
 					FATAL("Bad RDY transition detected (state = %d, LVE = %d RDY = %d)\n", ddata->state, gpio_lve, gpio_rdy);
 					ddata->errcnt++;
-					break;
 				}
 // 				ddata->cvt = ts;
 				// checking if there is space inside circular buffer
@@ -193,13 +185,14 @@ irqreturn_t irq_service(int irq, void *arg) {
 				FATAL("Bad RDY transition detected (state = %d, LVE = %d RDY = %d)\n", ddata->state, gpio_lve, gpio_rdy);
 				ddata->errcnt++;
 				ddata->state = SILPI_IDLE;
+				return IRQ_WAKE_THREAD
 		}
 		return IRQ_HANDLED;
 	}
 	
 	FATAL("IRQ %d not properly handled\n", irq);
 	ddata->errcnt++;
-	return IRQ_HANDLED;
+	return IRQ_WAKE_THREAD;
 }
 
 //threaded IRQ function
@@ -210,17 +203,23 @@ irqreturn_t irq_thread(int irq, void *arg) {
 	if(irq == ddata->rdy_irq) {
 		if(ddata->state == SILPI_DEAD) {
 			read_event(ddata);
-			return IRQ_HANDLED;
 		}
 		else {
 			FATAL("Bad threaded IRQ function call (state = %d)\n", ddata->state);
 			ddata->errcnt++;
-			return IRQ_HANDLED;
 		}
 	}
 	
-	FATAL("IRQ %d not properly handled (threaded function)\n", irq);
-	ddata->errcnt++;
+	// start of acknowledgement signal
+	gpio_set_value(ACK, 1);
+	
+	udelay(1);
+	
+	// end of acknowledgement signal
+	gpio_set_value(ACK, 0);
+	
+// 	FATAL("IRQ %d not properly handled (threaded function)\n", irq);
+// 	ddata->errcnt++;
 	return IRQ_HANDLED;
 }
 
