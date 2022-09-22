@@ -40,11 +40,9 @@ MODULE_LICENSE("GPL v2");
 
 //error mask bits
 #define SILPI_EIDLE_LVE      1
-#define SILPI_EIDLE_RDY      2
 #define SILPI_EIDLE_RDYIRQ   4
 #define SILPI_EIDLE_NOTIME   8
 #define SILPI_EDEAD_LVE     16
-#define SILPI_EDEAD_RDY     32
 
 // GPIO mapping
 #define RUN 23                  /* OUT - RUN/STOP          (active high) */
@@ -83,6 +81,7 @@ static struct device *dev_device = NULL;
 
 struct driver_data {
 	int rdy_irq, lve_irq, state;
+	int old_lve;
 	ktime_t lt1, lt2;
 	uint16_t val, emask;
 	atomic_t a_write_idx;
@@ -134,35 +133,41 @@ void fill_event(struct driver_data *ddata) {
 }
 
 irqreturn_t irq_lve(int irq, void *arg) {
-	int gpio_lve, gpio_rdy;
-	// retrieving data structure
-	struct driver_data *ddata = arg;
 	// getting IRQ timestamp as soon as possible
 	ktime_t ts = ktime_get_real();
-	
+	// retrieving data structure
+	struct driver_data *ddata = arg;
 	//checking IRQ coherence and glitches
-	gpio_lve = gpio_get_value(LVE);
-	gpio_rdy = gpio_get_value(RDY);
+	int gpio_lve = gpio_get_value(LVE);
+	if(gpio_lve == ddata->old_lve) {
+		FATAL("LVE transition glitch detected (state = %s, LVE: %d -> %d)\n", ddata->state == SILPI_IDLE ? "IDLE" : "DEAD", ddata->old_lve, gpio_lve);
+		return IRQ_HANDLED;
+	}
+	ddata->old_lve = gpio_lve;
+	
 	switch(ddata->state) {
 		case SILPI_IDLE:
-			ddata->emask = 0;
-			ddata->val   = 65535;
-			ddata->lt1   = ts;
-			if(gpio_lve || (gpio_rdy == 0)) {
-				FATAL("Bad LVE transition detected (state = IDLE, LVE = %d RDY = %d)\n", gpio_lve, gpio_rdy);
-				if(gpio_lve) ddata->emask |= SILPI_EIDLE_LVE;
-				if(gpio_rdy == 0) ddata->emask |= SILPI_EIDLE_RDY;
+			if(gpio_lve) {
+				FATAL("Bad LVE transition detected (state = IDLE, LVE: 0 -> 1)\n");
+				if(gpio_lve) ddata->emask = SILPI_EIDLE_LVE;
 			}
-			ddata->state = SILPI_DEAD;
+			else {
+				ddata->emask = 0;
+				ddata->val   = 65535;
+				ddata->lt1   = ts;
+				ddata->state = SILPI_DEAD;
+			}
 			break;
 		case SILPI_DEAD:
-			ddata->lt2   = ts;
-			ddata->state = SILPI_IDLE;
-			if(gpio_lve == 0) {
-				FATAL("Bad LVE transition detected (state = DEAD, LVE = %d RDY = %d)\n", gpio_lve, gpio_rdy);
+			if(gpio_lve) {
+				ddata->lt2   = ts;
+				ddata->state = SILPI_IDLE;
+				fill_event(ddata);
+			}
+			else {
+				FATAL("Bad LVE transition detected (state = DEAD, LVE: 1 -> 0)\n");
 				ddata->emask |= SILPI_EDEAD_LVE;
 			}
-			fill_event(ddata);
 	}
 	//IRQ handling in threaded mode
 	return IRQ_HANDLED;
@@ -177,13 +182,10 @@ irqreturn_t irq_rdy(int irq, void *arg) {
 	//checking IRQ coherence and glitches
 	gpio_rdy = gpio_get_value(RDY);
 	if(ddata->state == SILPI_IDLE) {
-		FATAL("Bad RDY transition detected (state = IDLE, RDY = %d)\n", gpio_rdy);
+		FATAL("Bad RDY transition detected (state = IDLE, RDY: ? -> %d)\n", gpio_rdy);
 		ddata->emask = SILPI_EIDLE_NOTIME | SILPI_EIDLE_RDYIRQ;
 		ddata->lt1   = ktime_get_real();
 		ddata->state = SILPI_DEAD;
-	}
-	if(gpio_rdy == 1 && ddata->state == SILPI_DEAD) {
-		ddata->emask = SILPI_EDEAD_RDY;
 	}
 	
 	if((atomic_read(&(ddata->a_write_idx)) + 1)%SIZE == atomic_read(&(ddata->a_read_idx))) {
@@ -239,8 +241,10 @@ int open(struct inode *inode, struct file *filp) {
 	gpio_direction_input(LVE);
 	ddata.lve_irq = gpio_to_irq(LVE);
 	
-	ddata.state  = SILPI_IDLE;
+	ddata.state  = SILPI_DEAD;
 	ddata.emask = 0;
+	
+	ddata.old_lve = 0;
 	
 	// everything is ready - register interrupt routines
 	if(request_threaded_irq(ddata.rdy_irq, irq_rdy, NULL, IRQF_TRIGGER_FALLING, "silenardy", &ddata)) {
