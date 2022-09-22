@@ -16,6 +16,12 @@
 #define F_WBUSY 4
 #define F_RBUSY 8
 
+//error mask bits
+#define SILPI_EIDLE_LVE      1
+#define SILPI_EIDLE_RDYIRQ   2
+#define SILPI_EIDLE_NOTIME   4
+#define SILPI_EDEAD_LVE      8
+
 //data structure to user space
 struct Silevent { //128-bit events
 	uint64_t ts; // event timestamp (in ns from 1/1/1970) registered at conversion start

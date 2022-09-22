@@ -38,12 +38,6 @@ MODULE_LICENSE("GPL v2");
 #define SILPI_IDLE  0
 #define SILPI_DEAD  1
 
-//error mask bits
-#define SILPI_EIDLE_LVE      1
-#define SILPI_EIDLE_RDYIRQ   4
-#define SILPI_EIDLE_NOTIME   8
-#define SILPI_EDEAD_LVE     16
-
 // GPIO mapping
 #define RUN 23                  /* OUT - RUN/STOP          (active high) */
 #define ENB 24                  /* OUT - ADC enable        (active high) */
@@ -140,7 +134,7 @@ irqreturn_t irq_lve(int irq, void *arg) {
 	//checking IRQ coherence and glitches
 	int gpio_lve = gpio_get_value(LVE);
 	if(gpio_lve == ddata->old_lve) {
-		FATAL("LVE transition glitch detected (state = %s, LVE: %d -> %d)\n", ddata->state == SILPI_IDLE ? "IDLE" : "DEAD", ddata->old_lve, gpio_lve);
+		DEBUG("LVE transition glitch detected (state = %s, LVE: %d -> %d)\n", ddata->state == SILPI_IDLE ? "IDLE" : "DEAD", ddata->old_lve, gpio_lve);
 		return IRQ_HANDLED;
 	}
 	ddata->old_lve = gpio_lve;
@@ -181,6 +175,11 @@ irqreturn_t irq_rdy(int irq, void *arg) {
 	
 	//checking IRQ coherence and glitches
 	gpio_rdy = gpio_get_value(RDY);
+	if(gpio_rdy) {
+		FATAL("RDY transition glitch detected (state = %s, RDY = 1)\n", ddata->state == SILPI_IDLE ? "IDLE" : "DEAD");
+		return IRQ_HANDLED;
+	}
+	
 	if(ddata->state == SILPI_IDLE) {
 		FATAL("Bad RDY transition detected (state = IDLE, RDY: ? -> %d)\n", gpio_rdy);
 		ddata->emask = SILPI_EIDLE_NOTIME | SILPI_EIDLE_RDYIRQ;
@@ -325,6 +324,7 @@ ssize_t read(struct file *filp, char *buf, const size_t count, loff_t *ppos) {
 	
 	// if the buffer hanged, try to read now that buffer is empty
 	if(gpio_get_value(RDY) == 0) {
+		FATAL("Recovering hanged buffer...\n");
 		read_event(ddata);
 		send_ack(ddata);
 		if(ddata->state == SILPI_IDLE) {

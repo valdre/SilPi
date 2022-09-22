@@ -112,6 +112,8 @@ int main(int argc, char *argv[]) {
 	for(;go;) {
 		zmq_send(requester, "send", 5, 0); //5 byte: c'è il carattere terminatore '\0'!!
 		n = zmq_recv(requester, data, SIZE * sizeof(struct Silevent), 0);
+		if(!go) break;
+		
 		if(n % sizeof(struct Silevent)) {
 			printf(UP RED "    main" NRM ": read fraction of event (size = %d)\n\n", n);
 			break;
