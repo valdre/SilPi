@@ -177,7 +177,7 @@ irqreturn_t irq_rdy(int irq, void *arg) {
 	//checking IRQ coherence and glitches
 	gpio_rdy = gpio_get_value(RDY);
 	if(ddata->state == SILPI_IDLE) {
-		FATAL("Bad RDY transition detected (state = IDLE, LVE = %d RDY = %d)\n", gpio_lve, gpio_rdy);
+		FATAL("Bad RDY transition detected (state = IDLE, RDY = %d)\n", gpio_rdy);
 		ddata->emask = SILPI_EIDLE_NOTIME | SILPI_EIDLE_RDYIRQ;
 		ddata->lt1   = ktime_get_real();
 		ddata->state = SILPI_DEAD;
@@ -338,9 +338,6 @@ ssize_t read(struct file *filp, char *buf, const size_t count, loff_t *ppos) {
 
 // write
 ssize_t write(struct file *filp, const char *user_buf, size_t count, loff_t *ppos) {
-	
-	struct driver_data *ddata = filp->private_data;
-	
 	DEBUG("write request for %d bytes\n", (int) count);
 	
 	if(count>0 && user_buf[0]=='1') gpio_set_value(RUN,1);
