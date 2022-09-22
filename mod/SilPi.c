@@ -169,14 +169,12 @@ irqreturn_t irq_lve(int irq, void *arg) {
 
 //threaded IRQ function
 irqreturn_t irq_rdy(int irq, void *arg) {
-	int gpio_rdy;
 	// retrieving data structure
 	struct driver_data *ddata = arg;
-	
 	//checking IRQ coherence and glitches
-	gpio_rdy = gpio_get_value(RDY);
+	int gpio_rdy = gpio_get_value(RDY);
 	if(gpio_rdy) {
-		FATAL("RDY transition glitch detected (state = %s, RDY = 1)\n", ddata->state == SILPI_IDLE ? "IDLE" : "DEAD");
+		DEBUG("RDY transition glitch detected (state = %s, RDY = 1)\n", ddata->state == SILPI_IDLE ? "IDLE" : "DEAD");
 		return IRQ_HANDLED;
 	}
 	
