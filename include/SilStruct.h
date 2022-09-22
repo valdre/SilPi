@@ -20,7 +20,7 @@
 struct Silevent { //128-bit events
 	uint64_t ts; // event timestamp (in ns from 1/1/1970) registered at conversion start
 	uint32_t dt; // total dead time: conversion time (due to Silena ADC) + reading time (due to Raspberry Pi)
-	uint16_t val, errcnt; // event value and error counter since previous event;
+	uint16_t val, emask; // event value and error bitmask;
 };
 
 struct Silshared {

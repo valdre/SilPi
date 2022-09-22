@@ -35,10 +35,16 @@ MODULE_LICENSE("GPL v2");
 #define EVENTSIZE sizeof(struct Silevent)
 
 // FSM states
-#define SILPI_IDLE 0
-#define SILPI_DEAD 1
-#define SILPI_EVNT 2
-#define SILPI_HANG 3
+#define SILPI_IDLE  0
+#define SILPI_DEAD  1
+
+//error mask bits
+#define SILPI_EIDLE_LVE      1
+#define SILPI_EIDLE_RDY      2
+#define SILPI_EIDLE_RDYIRQ   4
+#define SILPI_EIDLE_NOTIME   8
+#define SILPI_EDEAD_LVE     16
+#define SILPI_EDEAD_RDY     32
 
 // GPIO mapping
 #define RUN 23                  /* OUT - RUN/STOP          (active high) */
@@ -77,8 +83,8 @@ static struct device *dev_device = NULL;
 
 struct driver_data {
 	int rdy_irq, lve_irq, state;
-	ktime_t lt1, lt2;
-	uint16_t val, errcnt;
+	ktime_t ts, lt1, lt2;
+	uint16_t val, emask;
 	atomic_t a_write_idx;
 	atomic_t a_read_idx;
 	struct Silevent events[SIZE];
@@ -97,7 +103,17 @@ void read_event(struct driver_data *ddata) {
 	if((val^=0x1fff) < 2) val = 2;
 	
 	ddata->val = (uint16_t)val;
-	ddata->state = SILPI_EVNT;
+	return;
+}
+
+void send_ack(struct driver_data *ddata) {
+	// start of acknowledgement signal
+	gpio_set_value(ACK, 1);
+	
+	udelay(1);
+	
+	// end of acknowledgement signal
+	gpio_set_value(ACK, 0);
 	return;
 }
 
@@ -108,118 +124,85 @@ void fill_event(struct driver_data *ddata) {
 	ddata->events[write_idx].ts     = ktime_to_ns(ddata->lt1);
 	ddata->events[write_idx].dt     = (uint32_t)(ktime_to_ns(ddata->lt2) - ktime_to_ns(ddata->lt1));
 	ddata->events[write_idx].val    = ddata->val;
-	ddata->events[write_idx].errcnt = ddata->errcnt;
+	ddata->events[write_idx].emask  = ddata->emask;
 	
 	// setting new write index
 	write_idx = (write_idx+1) % SIZE;
 	atomic_set(&(ddata->a_write_idx), write_idx);
 	
-	// reset error counter
-	ddata->errcnt = 0;
 	return;
 }
 
 irqreturn_t irq_service(int irq, void *arg) {
-	int gpio_lve, gpio_rdy;
-	
-	// getting IRQ timestamp as soon as possible
-	ktime_t ts = ktime_get_real();
-	
 	// retrieving data structure
 	struct driver_data *ddata = arg;
+	// getting IRQ timestamp as soon as possible
+	ddata->ts = ktime_get_real();
 	
 	DEBUG("handling IRQ %d\n", irq);
-	
-	//checking IRQ coherence and glitches
-	gpio_lve = gpio_get_value(LVE);
-	gpio_rdy = gpio_get_value(RDY);
-	if(irq == ddata->lve_irq) {
-		switch(ddata->state) {
-			case SILPI_IDLE:
-				if(gpio_lve) {
-					FATAL("Bad LVE transition detected (state = %d, LVE = %d RDY = %d)\n", ddata->state, gpio_lve, gpio_rdy);
-					ddata->errcnt++;
-					return IRQ_WAKE_THREAD;
-				}
-				ddata->lt1 = ts;
-				ddata->state = SILPI_DEAD;
-				break;
-				
-			case SILPI_EVNT:
-				if(gpio_lve == 0) {
-					FATAL("Bad LVE transition detected (state = %d, LVE = %d RDY = %d)\n", ddata->state, gpio_lve, gpio_rdy);
-					ddata->errcnt++;
-					return IRQ_WAKE_THREAD;
-				}
-				ddata->lt2 = ts;
-				fill_event(ddata);
-				ddata->state = SILPI_IDLE;
-				break;
-				
-			default:
-				FATAL("Bad LVE transition detected (state = %d, LVE = %d RDY = %d)\n", ddata->state, gpio_lve, gpio_rdy);
-				ddata->errcnt++;
-				ddata->state = SILPI_IDLE;
-				return IRQ_WAKE_THREAD;
-		}
-		return IRQ_HANDLED;
-	}
-	
-	if(irq == ddata->rdy_irq) {
-		switch(ddata->state) {
-			case SILPI_DEAD:
-				if(gpio_rdy == 1) {
-					FATAL("Bad RDY transition detected (state = %d, LVE = %d RDY = %d)\n", ddata->state, gpio_lve, gpio_rdy);
-					ddata->errcnt++;
-				}
-// 				ddata->cvt = ts;
-				// checking if there is space inside circular buffer
-				if((atomic_read(&(ddata->a_write_idx)) + 1)%SIZE == atomic_read(&(ddata->a_read_idx))) {
-					DEBUG("buffer hanged\n");
-					ddata->state = SILPI_HANG;
-					break;
-				}
-				return IRQ_WAKE_THREAD;
-				
-			default:
-				FATAL("Bad RDY transition detected (state = %d, LVE = %d RDY = %d)\n", ddata->state, gpio_lve, gpio_rdy);
-				ddata->errcnt++;
-				ddata->state = SILPI_IDLE;
-				return IRQ_WAKE_THREAD
-		}
-		return IRQ_HANDLED;
-	}
-	
-	FATAL("IRQ %d not properly handled\n", irq);
-	ddata->errcnt++;
+	//IRQ handling in threaded mode
 	return IRQ_WAKE_THREAD;
 }
 
 //threaded IRQ function
 irqreturn_t irq_thread(int irq, void *arg) {
+	int gpio_lve, gpio_rdy;
 	// retrieving data structure
 	struct driver_data *ddata = arg;
 	
-	if(irq == ddata->rdy_irq) {
-		if(ddata->state == SILPI_DEAD) {
-			read_event(ddata);
+	udelay(1); //wait 1us to avoid glitches
+	
+	//checking IRQ coherence and glitches
+	gpio_lve = gpio_get_value(LVE);
+	gpio_rdy = gpio_get_value(RDY);
+	
+	//checking IRQ coherence and glitches
+	if(irq == ddata->lve_irq) {
+		switch(ddata->state) {
+			case SILPI_IDLE:
+				ddata->emask = 0;
+				ddata->val   = 65535;
+				ddata->lt1   = ddata->ts;
+				if(gpio_lve || (gpio_rdy == 0)) {
+					FATAL("Bad LVE transition detected (state = IDLE, LVE = %d RDY = %d)\n", gpio_lve, gpio_rdy);
+					if(gpio_lve) ddata->emask |= SILPI_EIDLE_LVE;
+					if(gpio_rdy == 0) ddata->emask |= SILPI_EIDLE_RDY;
+				}
+				ddata->state = SILPI_DEAD;
+				break;
+			case SILPI_DEAD:
+				ddata->lt2   = ddata->ts;
+				ddata->state = SILPI_IDLE;
+				if(gpio_lve == 0) {
+					FATAL("Bad LVE transition detected (state = DEAD, LVE = %d RDY = %d)\n", gpio_lve, gpio_rdy);
+					ddata->emask |= SILPI_EDEAD_LVE;
+				}
+				fill_event(ddata);
 		}
-		else {
-			FATAL("Bad threaded IRQ function call (state = %d)\n", ddata->state);
-			ddata->errcnt++;
+	}
+	else if(irq == ddata->rdy_irq) {
+		if(ddata->state == SILPI_IDLE) {
+			FATAL("Bad RDY transition detected (state = IDLE, LVE = %d RDY = %d)\n", gpio_lve, gpio_rdy);
+			ddata->emask = SILPI_EIDLE_NOTIME | SILPI_EIDLE_RDYIRQ;
+			ddata->lt1   = ddata->ts;
+			ddata->state = SILPI_DEAD;
+		}
+		if(gpio_rdy == 1 && ddata->state == SILPI_DEAD) {
+			ddata->emask = SILPI_EDEAD_RDY;
 		}
 	}
 	
-	// start of acknowledgement signal
-	gpio_set_value(ACK, 1);
+	//independently of the state, if data is ready => read data!
+	if(gpio_rdy == 0 || irq == ddata->rdy_irq) {
+		if((atomic_read(&(ddata->a_write_idx)) + 1)%SIZE == atomic_read(&(ddata->a_read_idx))) {
+			DEBUG("buffer hanged\n");
+		}
+		else {
+			read_event(ddata);
+			send_ack(ddata);
+		}
+	}
 	
-	udelay(1);
-	
-	// end of acknowledgement signal
-	gpio_set_value(ACK, 0);
-	
-// 	FATAL("IRQ %d not properly handled (threaded function)\n", irq);
-// 	ddata->errcnt++;
 	return IRQ_HANDLED;
 }
 
@@ -266,7 +249,8 @@ int open(struct inode *inode, struct file *filp) {
 	ddata.lve_irq = gpio_to_irq(LVE);
 	
 	ddata.state  = SILPI_IDLE;
-	ddata.errcnt = 0;
+	ddata.emask = 0;
+	ddata.ts = ktime_get_real();
 	
 	// everything is ready - register interrupt routines
 	if(request_threaded_irq(ddata.rdy_irq, irq_service, irq_thread, IRQF_TRIGGER_FALLING, "silenardy", &ddata)) {
@@ -346,11 +330,13 @@ ssize_t read(struct file *filp, char *buf, const size_t count, loff_t *ppos) {
 	atomic_set (&(ddata->a_read_idx), read_idx);
 	
 	// if the buffer hanged, try to read now that buffer is empty
-	if(ddata->state == SILPI_HANG) {
-		if(gpio_get_value(RDY)==0) read_event(ddata);
-		else {
-			FATAL("Bad RDY value with hanged buffer\n");
-			ddata->state = SILPI_IDLE;
+	if(gpio_get_value(RDY) == 0) {
+		read_event(ddata);
+		send_ack(ddata);
+		if(ddata->state == SILPI_IDLE) {
+			ddata->state = SILPI_DEAD;
+			ddata->emask = SILPI_EIDLE_NOTIME;
+			ddata->lt1   = ktime_get_real();
 		}
 	}
 	return transfer_byte;
@@ -363,9 +349,14 @@ ssize_t read(struct file *filp, char *buf, const size_t count, loff_t *ppos) {
 // write
 ssize_t write(struct file *filp, const char *user_buf, size_t count, loff_t *ppos) {
 	
+	struct driver_data *ddata = filp->private_data;
+	
 	DEBUG("write request for %d bytes\n", (int) count);
 	
-	if(count>0 && user_buf[0]=='1') gpio_set_value(RUN,1);
+	if(count>0 && user_buf[0]=='1') {
+		gpio_set_value(RUN,1);
+		ddata.ts = ktime_get_real();
+	}
 	if(count>0 && user_buf[0]=='0') gpio_set_value(RUN,0);
 	
 	return count;

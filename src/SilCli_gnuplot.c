@@ -140,7 +140,7 @@ int main(int argc, char *argv[]) {
 			n = zmq_recv(requester, &flags, sizeof(int), 0);
 			
 			//status update every second
-			printf(UP BLD "   *****" NRM " uptime =%6lu s, tot.ev = %10lu, status =%s, i-rate =%6.0lf Hz, i-d.time =%3.0lf %%\n", msec / 1000L, N, (flags&F_PAUSE) ? (YEL "PAUSE" NRM) : ((flags&F_RUN) ? (GRN " RUN " NRM) : (RED " STOP" NRM)), 1000. * ((double)(N - lastN)) / ((double)(msec - lastmsec)), 100. * ((double)(tdead - lasttdead)) / ((double)(tall - lasttall)));
+			printf(UP BLD "   *****" NRM " uptime =%6lu s, tot.ev = %10lu, status =%s, i-rate =%6.0lf Hz, i-d.time =%3.0lf %%\n", msec / 1000L, N, (flags&F_PAUSE) ? (YEL "PAUSE" NRM) : ((flags&F_RUN) ? (GRN " RUN " NRM) : (RED " STOP" NRM)), 1000. * ((double)(N - lastN)) / ((double)(msec - lastmsec)), tall == lasttall ? 0 : 100. * ((double)(tdead - lasttdead)) / ((double)(tall - lasttall)));
 			lastN = N;
 			lasttall = tall;
 			lasttdead = tdead;
