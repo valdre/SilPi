@@ -233,6 +233,11 @@ int main() {
 				continue;
 			}
 			
+			if(strcmp(buffer, "check") == 0) {
+				zmq_send(responder, "ACK", 4, 0);
+				continue;
+			}
+			
 			if(strcmp(buffer, "send") == 0) {
 				while(buf->flags & F_WBUSY) usleep(1000);
 				buf->flags |= F_RBUSY;

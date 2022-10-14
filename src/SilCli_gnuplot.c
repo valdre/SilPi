@@ -64,7 +64,7 @@ int main(int argc, char *argv[]) {
 	}
 	
 	do sprintf(par, "%s%05d.dat", prefix, range++);
-	while((fopen(par, "r")));
+	while(access(par, F_OK) == 0);
 	
 	if(bits < 10 || bits > 16) {
 		printf(YEL "    main" NRM ": bad number of ADC bits (10-16 range allowed). Set to 13 by default!\n");
@@ -102,7 +102,7 @@ int main(int argc, char *argv[]) {
 	int flags;
 	struct Silevent data[SIZE];
 	uint64_t t0 = 0, tall = 0, tdead = 0, lasttall = 0, lasttdead = 0;
-	uint64_t spec[65536], N = 0, lastN = 0;
+	uint64_t spec[65536], M = 1, N = 0, lastN = 0;
 	for(int j = 0; j < 65536; j++) spec[j] = 0;
 	
 	printf("\n");
@@ -122,8 +122,13 @@ int main(int argc, char *argv[]) {
 		
 		for(int j = 0; j < n; j++) {
 			if(t0 == 0) {
-				//always skip first event (used as start time mark)
+				//always skip first M non-zero events (used as start time mark, first is usually not reliable)
 				t0 = data[j].ts + (uint64_t)(data[j].dt);
+				if(t0 && M) {
+					M--;
+					t0 = 0;
+				}
+				if(t0) gettimeofday(&ti, NULL);
 				continue;
 			}
 			tall = data[j].ts + (uint64_t)(data[j].dt) - t0;
