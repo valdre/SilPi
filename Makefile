@@ -1,7 +1,13 @@
-### Simone Valdre' - 28/09/2022. Distributed under GPL-3.0-or-later licence
+### Simone Valdre' - 17/10/2022. Distributed under GPL-3.0-or-later licence
 
-all: SilServ.out SilCli_gnuplot.out SilCli_root.out
+all: SilCli_gnuplot.out SilCli_root.out
 	
+
+server: mod/SilPi.ko SilServ.out
+	
+
+mod/SilPi.ko: mod/SilPi.c
+	$(MAKE) -C `pwd`/mod
 
 SilCli_gnuplot.out: obj/SilCli_gnuplot.o
 	gcc -Wall -Wextra -o $@ $^ -lzmq
@@ -11,9 +17,6 @@ SilCli_root.out: src/SilCli_root.cpp SilCli_rootDict.cxx
 
 SilServ.out: obj/SilServ.o obj/SilShared.o
 	gcc -Wall -Wextra -o $@ $^ -lzmq -lrt
-
-module: mod/SilPi.c
-	$(MAKE) -C `pwd`/mod
 
 obj/%.o: src/%.c
 	gcc -Wall -Wextra -c -o $@ $^

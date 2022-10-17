@@ -1,6 +1,6 @@
 /*******************************************************************************
 *                                                                              *
-*                         Simone Valdre' - 14/10/2022                          *
+*                         Simone Valdre' - 17/10/2022                          *
 *                  distributed under GPL-3.0-or-later licence                  *
 *                                                                              *
 *******************************************************************************/
@@ -34,7 +34,6 @@
 #define FETCHINT 100000
 //Histograms and Graphs update interval (in ms)
 #define HISTUP     5000L
-#define GRAPHUP   60000L
 
 static MyMainFrame *me;
 pid_t cproc;
@@ -125,7 +124,7 @@ void MyMainFrame::Connect() {
 	tbauto->SetEnabled(kTRUE);
 	
 	//I create hbkg BEFORE creating the output file because I don't want it in the file!
-	hbkg = new TH2F("hbkg", "Event rate", 1440, 0, 86400, 1000, 0, 10000);
+	hbkg = new TH2F("hbkg", "", 1440, 0, 86400, 1000, 0, 10000);
 	
 	if(fout && (fout->IsZombie() == kFALSE)) {
 		fout->Write();
@@ -173,9 +172,9 @@ void MyMainFrame::SetupTree() {
 void MyMainFrame::SetupHistos() {
 	if(fout) fout->cd();
 	
-	hspe = new TH1D("hspe", "Energy spectrum", range, 0, range);
-	hdead = new TH1D("hdead", "Dead time distribution", 1000, 0, 200);
-	hrate = new TH1D("hrate", "Event interval distribution", 10000, 0, 100);
+	hspe = new TH1D("hspe", "", range, 0, range);
+	hdead = new TH1D("hdead", "", 1000, 0, 200);
+	hrate = new TH1D("hrate", "", 10000, 0, 100);
 	
 	gall = new TGraph();
 	gall->SetName("gall");
@@ -187,47 +186,98 @@ void MyMainFrame::SetupHistos() {
 	
 	//Canvas setup!
 	TCanvas *fCanvas = fEcanvas->GetCanvas();
+	fCanvas->cd();
 	fCanvas->GetPad(0)->SetGridx(kFALSE);
 	fCanvas->GetPad(0)->SetGridy(kFALSE);
 	fCanvas->GetPad(0)->SetLogy(kTRUE);
-	fCanvas->cd();
+	fCanvas->GetPad(0)->SetMargin(0.068, 0.01, 0.11, 0.02);
+	
+	hspe->SetLineColor(kBlack);
+	hspe->SetLineWidth(2);
 	hspe->GetXaxis()->SetRangeUser(2, range);
+	hspe->GetXaxis()->SetTitle("Energy [ADC units]");
+	hspe->GetXaxis()->SetTitleSize(0.05);
+	hspe->GetXaxis()->SetLabelSize(0.05);
+	hspe->GetYaxis()->SetTitle("Counts per ADC unit");
+	hspe->GetYaxis()->SetTitleSize(0.05);
+	hspe->GetYaxis()->SetTitleOffset(0.65);
+	hspe->GetYaxis()->SetLabelSize(0.05);
 	hspe->SetStats(kFALSE);
 	hspe->Draw();
 	fCanvas->Modified();
 	fCanvas->Update();
 	
 	fCanvas = fMini[0]->GetCanvas();
+	fCanvas->cd();
 	fCanvas->GetPad(0)->SetGridx(kFALSE);
 	fCanvas->GetPad(0)->SetGridy(kFALSE);
 	fCanvas->GetPad(0)->SetLogy(kTRUE);
-	fCanvas->cd();
+	fCanvas->GetPad(0)->SetMargin(0.17, 0.07, 0.12, 0.03);
+	
 	hbkg->GetXaxis()->SetTimeDisplay(kTRUE);
 	hbkg->GetXaxis()->SetNdivisions(503);
 	hbkg->GetXaxis()->SetTimeFormat("%H:%M");
 	hbkg->GetXaxis()->SetTimeOffset(0, "gmt");
+	hbkg->GetXaxis()->SetTitle("UTC time");
+	hbkg->GetXaxis()->SetTitleSize(0.06);
+	hbkg->GetXaxis()->SetTitleOffset(0.95);
+	hbkg->GetXaxis()->SetLabelSize(0.06);
+	hbkg->GetYaxis()->SetTitle("Event rate [ev/s]");
+	hbkg->GetYaxis()->SetTitleSize(0.06);
+	hbkg->GetYaxis()->SetTitleOffset(1.28);
+	hbkg->GetYaxis()->SetLabelSize(0.06);
+	hbkg->GetYaxis()->SetRangeUser(0.5, 10000);
 	hbkg->SetStats(kFALSE);
 	hbkg->Draw();
 	fCanvas->Modified();
 	fCanvas->Update();
 	gall->SetLineColor(kBlue + 2);
+	gall->SetLineWidth(2);
 	glive->SetLineColor(kGreen + 2);
+	glive->SetLineWidth(2);
 	
 	fCanvas = fMini[1]->GetCanvas();
+	fCanvas->cd();
 	fCanvas->GetPad(0)->SetGridx(kFALSE);
 	fCanvas->GetPad(0)->SetGridy(kFALSE);
 	fCanvas->GetPad(0)->SetLogy(kTRUE);
-	fCanvas->cd();
+	fCanvas->GetPad(0)->SetMargin(0.17, 0.07, 0.12, 0.03);
+	
+	hdead->GetXaxis()->SetNdivisions(508);
+	hdead->GetXaxis()->SetTitle("Dead time [#mus]");
+	hdead->GetXaxis()->SetTitleSize(0.06);
+	hdead->GetXaxis()->SetTitleOffset(0.95);
+	hdead->GetXaxis()->SetLabelSize(0.06);
+	hdead->GetYaxis()->SetTitle("Counts per bin");
+	hdead->GetYaxis()->SetTitleSize(0.06);
+	hdead->GetYaxis()->SetTitleOffset(1.28);
+	hdead->GetYaxis()->SetLabelSize(0.06);
 	hdead->SetStats(kFALSE);
+	hdead->SetLineColor(kRed + 2);
+	hdead->SetLineWidth(2);
 	hdead->Draw();
 	fCanvas->Modified();
 	fCanvas->Update();
 	
 	fCanvas = fMini[2]->GetCanvas();
+	fCanvas->cd();
 	fCanvas->GetPad(0)->SetGridx(kFALSE);
 	fCanvas->GetPad(0)->SetGridy(kFALSE);
-	fCanvas->cd();
+	fCanvas->GetPad(0)->SetLogy(kTRUE);
+	fCanvas->GetPad(0)->SetMargin(0.17, 0.07, 0.12, 0.03);
+	
+	hrate->GetXaxis()->SetNdivisions(508);
+	hrate->GetXaxis()->SetTitle("Event interval [ms]");
+	hrate->GetXaxis()->SetTitleSize(0.06);
+	hrate->GetXaxis()->SetTitleOffset(0.95);
+	hrate->GetXaxis()->SetLabelSize(0.06);
+	hrate->GetYaxis()->SetTitle("Counts per bin");
+	hrate->GetYaxis()->SetTitleSize(0.06);
+	hrate->GetYaxis()->SetTitleOffset(1.28);
+	hrate->GetYaxis()->SetLabelSize(0.06);
 	hrate->SetStats(kFALSE);
+	hrate->SetLineColor(kBlue + 2);
+	hrate->SetLineWidth(2);
 	hrate->Draw();
 	fCanvas->Modified();
 	fCanvas->Update();
@@ -254,8 +304,8 @@ void MyMainFrame::Start() {
 	printf("[parent] START -> %s\n", buffer);
 	gettimeofday(&ti, NULL);
 	count = 1;
-	t0 = 0; lastts = 0; tall = 0; tdead = 0; lasttah = 0; lasttag = 0; lasttdh = 0; lasttdg = 0; lastNh = 0; lastNg = 0;
-	Nev = 0; lasthup = 0; lastgup = 0; buffil = 0; Nbuf = 0;
+	t0 = 0; lastts = 0; tall = 0; tdead = 0; lasttall = 0; lasttdead = 0; lastN = 0;
+	Nev = 0; lastup = 0; buffil = 0; Nbuf = 0;
 	
 	istat = 2;
 	testat->SetText(stat[istat]);
@@ -349,8 +399,7 @@ void MyMainFrame::Fetch() {
 	gettimeofday(&tf, NULL);
 	timersub(&tf, &ti, &td);
 	uint64_t msec = ((uint64_t)td.tv_usec + 1000000L * (uint64_t)td.tv_sec + 500L) / 1000L;
-	if(msec - lasthup >= HISTUP) {
-		//SOLO SE AUTO UPDATE!!
+	if(msec - lastup >= HISTUP) {
 		fEcanvas->GetCanvas()->Modified();
 		fEcanvas->GetCanvas()->Update();
 		fMini[1]->GetCanvas()->Modified();
@@ -358,9 +407,12 @@ void MyMainFrame::Fetch() {
 		fMini[2]->GetCanvas()->Modified();
 		fMini[2]->GetCanvas()->Update();
 		
-		double dead = (tall == lasttah) ? 0 : ((double)(tdead - lasttdh)) / ((double)(tall - lasttah));
+		double dead = (tall == lasttall) ? 0 : ((double)(tdead - lasttdead)) / ((double)(tall - lasttall));
 		double buff = Nbuf ? buffil / (Nbuf * (double)SIZE) : 0;
-		double rate = 1000. * ((double)(Nev - lastNh)) / ((double)(msec - lasthup));
+		double rate = 1000. * ((double)(Nev - lastN)) / ((double)(msec - lastup));
+		double sec = (double)(tf.tv_sec % 86400L);
+		double grange = (sec < 600.) ? 600. : sec;
+		hbkg->GetXaxis()->SetRangeUser(grange - 600., grange);
 		
 		pbdead->Reset();
 		pbdead->SetPosition(dead);
@@ -370,23 +422,6 @@ void MyMainFrame::Fetch() {
 		if(rate) pbrate->SetPosition(log10(1 + rate));
 		else pbrate->SetPosition(0);
 		
-		lastNh  = Nev;
-		lasttah = tall;
-		lasttdh = tdead;
-		lasthup = msec;
-		buffil  = 0; Nbuf = 0;
-	}
-	
-	if(msec - lastgup >= GRAPHUP) {
-		double dead = (tall == lasttag) ? 0 : ((double)(tdead - lasttdg)) / ((double)(tall - lasttag));
-		
-		double rate = 1000. * ((double)(Nev - lastNg)) / ((double)(msec - lastgup));
-		double sec = (double)(tf.tv_sec % 86400L - GRAPHUP/2000);
-		if(sec < 0.) sec += 86400.;
-		double grange = 60. * ceil(sec / 60.);
-		if(grange < 3600.) grange = 3600.;
-		hbkg->GetXaxis()->SetRangeUser(grange - 3600., grange);
-		
 		fMini[0]->GetCanvas()->cd();
 		gall->AddPoint(sec, rate / (1. - dead));
 		glive->AddPoint(sec, rate);
@@ -395,12 +430,15 @@ void MyMainFrame::Fetch() {
 		fMini[0]->GetCanvas()->Modified();
 		fMini[0]->GetCanvas()->Update();
 		
-		lastNg  = Nev;
-		lastgup = msec;
-		lasttag = tall;
-		lasttdg = tdead;
+		lastN  = Nev;
+		lastup = msec;
+		lasttall = tall;
+		lasttdead = tdead;
+		buffil  = 0; Nbuf = 0;
+		
+		fout->Write();
+		fout->Purge();
 	}
-	
 	return;
 }
 
@@ -415,6 +453,7 @@ MyMainFrame::MyMainFrame(const TGWindow *p, UInt_t w, UInt_t h) {
 	context = nullptr;
 	requester = nullptr;
 	fout = nullptr;
+	hbkg = nullptr;
 	
 	FontStruct_t font_sml = gClient->GetFontByName("-*-arial-regular-r-*-*-16-*-*-*-*-*-iso8859-1");
 	FontStruct_t font_big = gClient->GetFontByName("-*-arial-regular-r-*-*-24-*-*-*-*-*-iso8859-1");
@@ -665,10 +704,26 @@ void MyMainFrame::Terminate() {
 	
 	if(istat == 2) Stop();
 	
+	if(istat > 0) {
+		if(zmq_send(requester, "exit", 5, 0) < 0) {
+			perror("[parent] zmq_send");
+		}
+		
+		char buffer[1000];
+		int N = zmq_recv(requester, buffer, 999, 0);
+		if(N < 0) {
+			perror("[parent] zmq_recv");
+		}
+		else {
+			buffer[N] = '\0';
+			printf("[parent]  EXIT -> %s\n", buffer);
+		}
+	}
+	
 	if(requester) zmq_close(requester);
 	if(context) zmq_ctx_destroy(context);
 	
-	hbkg->Delete();
+	if(hbkg) hbkg->Delete();
 	
 	if(fout && (fout->IsZombie() == kFALSE)) {
 		fout->Write();

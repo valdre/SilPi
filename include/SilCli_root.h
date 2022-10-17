@@ -54,8 +54,8 @@ private:
 	
 	void *context, *requester;
 	
-	uint64_t t0, lastts, tall, tdead, lasttah, lasttag, lasttdh, lasttdg, lastNh, lastNg;
-	uint64_t Nev, lasthup, lastgup;
+	uint64_t t0, lastts, tall, tdead, lasttall, lasttdead, lastN;
+	uint64_t Nev, lastup;
 	double buffil, Nbuf;
 	struct timeval ti;
 	int count;
