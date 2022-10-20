@@ -15,6 +15,7 @@
 
 #include <unistd.h>
 #include <signal.h>
+#include <errno.h>
 #include <sys/time.h>
 #include <zmq.h>
 
@@ -25,7 +26,7 @@
 #define WINDOWY 800
 
 #define CANVASX 964
-#define CANVASY 400
+#define CANVASY 500
 
 #define MINICANVASX 320
 #define MINICANVASY 320
@@ -37,7 +38,7 @@
 
 static MyMainFrame *me;
 pid_t cproc;
-bool go, waitpipe;
+bool go, fen;
 
 uint64_t ts;
 uint32_t dt;
@@ -46,116 +47,175 @@ uint16_t val, emask;
 //Parent signal handler
 extern "C" {
 	static void handlesig_parent(int sig) {
-		if(sig == SIGINT) printf("\n[parent] SIGINT catched and IGNORED => please use Quit button to exit!!!\n");
-		else if(sig == SIGUSR1) me->Fetch();
+		switch(sig) {
+			case SIGINT: case SIGTERM:
+				me->Terminate();
+				break;
+			case SIGUSR1:
+				me->Fetch();
+		}
 		return;
 	}
 }
 
 //Child signal handler
 void handlesig_child(int sig) {
-	if(sig == SIGINT) printf("\n[child ] SIGINT catched and IGNORED => please use Quit button to exit!!!\n");
-	else go = false;
+	switch(sig) {
+		case SIGINT:
+			//ignore SIGINT (handled by parent)
+			break;
+		case SIGUSR1:
+			//enable data fetching
+			fen = true;
+			usleep(100000);
+			break;
+		case SIGUSR2:
+			//disable data fetching
+			fen = false;
+			break;
+		case SIGTERM:
+			//exit process
+			go = false;
+	}
 	return;
 }
 
+int MyMainFrame::Query(void *requester, const void *q, const size_t &qlen, void *ans, const size_t &alen, const int &type) {
+	if(fTest) return 0;
+	if(requester == nullptr) return -1;
+	if(qtype) {
+		printf("[parent] emptying buffer!\n");
+		if(qtype == QTYPE_BUF) {
+			char buffer[1000];
+			int N = zmq_recv(requester, buffer, 999, 0);
+			if(N < 0) {
+				perror("[parent] zmq_recv");
+				return -1;
+			}
+		}
+		else if(qtype == QTYPE_DAT) {
+			struct Silevent data[SIZE];
+			int N = zmq_recv(requester, data, SIZE * sizeof(struct Silevent), 0);
+			if(N < 0) {
+				perror("[parent] zmq_recv");
+				return -1;
+			}
+		}
+		qtype = 0;
+	}
+	if(q == nullptr || ans == nullptr) return 0;
+	
+	qtype = type;
+	if(zmq_send(requester, q, qlen, 0) < 0) {
+		perror("[parent] zmq_send");
+		return -1;
+	}
+	
+	int N = zmq_recv(requester, ans, alen, 0);
+	if(N < 0) {
+		perror("[parent] zmq_recv");
+		return -1;
+	}
+	qtype = 0;
+	return N;
+}
+
 void MyMainFrame::Connect() {
+	if(istat > 0) {
+		PiDisconnect();
+		return;
+	}
+	
 	char buffer[1000];
 	int N = 100; //setting a 100ms timeout!
 	
-	if(context) printf("[parent] ZMQ context already exists!\n");
-	else context = zmq_ctx_new();
-	if(requester) printf("[parent] ZMQ socket already exists!\n");
-	else requester = zmq_socket(context, ZMQ_REQ);
-	if(zmq_setsockopt(requester, ZMQ_RCVTIMEO, &N, sizeof(N))) {
-		perror("[parent] zmq_setsockopt");
+	if(!fTest) {
+		if(context) printf("[parent] ZMQ context already exists!\n");
+		else context = zmq_ctx_new();
+		if(requester) printf("[parent] ZMQ socket already exists!\n");
+		else requester = zmq_socket(context, ZMQ_REQ);
+		if(zmq_setsockopt(requester, ZMQ_RCVTIMEO, &N, sizeof(N))) {
+			perror("[parent] zmq_setsockopt");
+		}
+		
+		lout->SetText("Connection failed!");
+		
+		sprintf(buffer, "tcp://%s:4747", tehost->GetText());
+		printf("[parent] connecting to %s\n", buffer);
+		if(zmq_connect(requester, buffer)) {
+			perror("[parent] zmq_connect");
+			zmq_close(requester);
+			requester = nullptr;
+			zmq_ctx_destroy(context);
+			context = nullptr;
+			return;
+		}
+		
+		printf("[parent] checking server status\n");
+		N = Query(requester, "check", 6, buffer, 999, QTYPE_BUF);
+		if(N < 0) {
+			zmq_close(requester);
+			requester = nullptr;
+			zmq_ctx_destroy(context);
+			context = nullptr;
+			return;
+		}
+		buffer[N] = '\0';
+		
+		printf("[parent] answer received -> %s\n", buffer);
+		if(strcmp(buffer, "ACK")) {
+			printf("[child] server check failed\n");
+			zmq_close(requester);
+			requester = nullptr;
+			zmq_ctx_destroy(context);
+			context = nullptr;
+			return;
+		}
 	}
 	
-	lout->SetText("Connection failed!");
-	
-	sprintf(buffer, "tcp://%s:4747", tehost->GetText());
-	printf("[parent] connecting to %s\n", buffer);
-	if(zmq_connect(requester, buffer)) {
-		perror("[parent] zmq_connect");
-		zmq_close(requester);
-		requester = nullptr;
-		zmq_ctx_destroy(context);
-		context = nullptr;
-		return;
-	}
-	
-	printf("[parent] checking server status\n");
-	if(zmq_send(requester, "check", 6, 0) < 0) {
-		perror("[parent] zmq_send");
-		zmq_close(requester);
-		requester = nullptr;
-		zmq_ctx_destroy(context);
-		context = nullptr;
-		return;
-	}
-	
-	N = zmq_recv(requester, buffer, 999, 0);
-	if(N < 0) {
-		perror("[parent] zmq_recv");
-		zmq_close(requester);
-		requester = nullptr;
-		zmq_ctx_destroy(context);
-		context = nullptr;
-		return;
-	}
-	buffer[N] = '\0';
-	
-	printf("[parent] answer received -> %s\n", buffer);
-	if(strcmp(buffer, "ACK")) {
-		printf("[child] server check failed\n");
-		zmq_close(requester);
-		requester = nullptr;
-		zmq_ctx_destroy(context);
-		context = nullptr;
-		return;
-	}
+	lout->SetText("Ready to start acquisition!");
 	
 	tehost->SetEnabled(kFALSE);
-	cbbits->SetEnabled(kFALSE);
-	tepre->SetEnabled(kFALSE);
-	tbconn->SetEnabled(kFALSE);
+	tbconn->SetText("\nDISCONNECT                   ");
+	cbbits->SetEnabled(kTRUE);
+	tepre->SetEnabled(kTRUE);
 	tbstart->SetEnabled(kTRUE);
-	tbmanu->SetEnabled(kTRUE);
-	tbauto->SetEnabled(kTRUE);
+// 	tbmanu->SetEnabled(kTRUE);
+// 	tbauto->SetEnabled(kTRUE);
 	
-	//I create hbkg BEFORE creating the output file because I don't want it in the file!
-	hbkg = new TH2F("hbkg", "", 1440, 0, 86400, 1000, 0, 10000);
-	
-	if(fout && (fout->IsZombie() == kFALSE)) {
-		fout->Write();
-		fout->Purge();
-		fout->Close();
-	}
-	if(fout) delete fout;
-	
-	range = 0;
-	do sprintf(buffer, "%s%05d.root", tepre->GetText(), range++);
-	while(access(buffer, F_OK) == 0);
-	
-	fout = new TFile(buffer, "RECREATE");
-	if(fout->IsZombie()) {
-		lout->SetText("Bad output file. DISK STORAGE DISABLED!");
-		delete fout;
-		fout = nullptr;
-	}
-	else {
-		lout->SetText(Form("Writing on %s", buffer));
-		SetupTree();
-	}
-	
-	int bits = 10 + cbbits->GetSelected();
-	range = (1 << bits);
-	
-	SetupHistos();
-	
-	istat = 1;
+	istat = STAT_STOP;
 	testat->SetText(stat[istat]);
 	return;
+}
+
+void MyMainFrame::PiDisconnect() {
+	if(istat > 1) Stop();
+	if(requester && !fTest) {
+		if(istat > 0) {
+			char buffer[1000];
+			int N = Query(requester, "exit", 5, buffer, 999, QTYPE_BUF);
+			if(N >= 0) {
+				buffer[N] = '\0';
+				printf("[parent]  EXIT -> %s\n", buffer);
+			}
+		}
+	}
+	if(requester) {
+		Query(requester, nullptr, 0, nullptr, 0, 0);
+		zmq_close(requester);
+	}
+	if(context) zmq_ctx_destroy(context);
+	
+	tehost->SetEnabled(kTRUE);
+	tbconn->SetText("\nCONNECT                 ");
+	cbbits->SetEnabled(kFALSE);
+	tepre->SetEnabled(kFALSE);
+	tbstart->SetEnabled(kFALSE);
+	
+	lout->SetText("Ready to connect!");
+	
+	istat = STAT_NCFG;
+	testat->SetText(stat[istat]);
 }
 
 void MyMainFrame::SetupTree() {
@@ -170,6 +230,8 @@ void MyMainFrame::SetupTree() {
 }
 
 void MyMainFrame::SetupHistos() {
+	int range = (1 << (10 + cbbits->GetSelected()));
+	
 	if(fout) fout->cd();
 	
 	hspe = new TH1D("hspe", "", range, 0, range);
@@ -284,64 +346,186 @@ void MyMainFrame::SetupHistos() {
 	return;
 }
 
-void MyMainFrame::Start() {
-	int N;
-	char buffer[1000];
-	
-	if(zmq_send(requester, "start", 6, 0) < 0) {
-		perror("[parent] zmq_send");
-		lout->SetText("Server connection failed");
-		return;
+void MyMainFrame::MultiButton() {
+	switch(istat) {
+		case STAT_STOP:
+			Start();
+			break;
+		case STAT_STRT:
+			Pause();
+			break;
+		case STAT_PAUS:
+			Resume();
 	}
-	
-	N = zmq_recv(requester, buffer, 999, 0);
-	if(N < 0) {
-		perror("[parent] zmq_recv");
-		lout->SetText("Server connection failed");
-		return;
-	}
-	buffer[N] = '\0';
-	printf("[parent] START -> %s\n", buffer);
-	gettimeofday(&ti, NULL);
-	count = 1;
-	t0 = 0; lastts = 0; tall = 0; tdead = 0; lasttall = 0; lasttdead = 0; lastN = 0;
-	Nev = 0; lastup = 0; buffil = 0; Nbuf = 0;
-	
-	istat = 2;
-	testat->SetText(stat[istat]);
-	
-	tbstart->SetEnabled(kFALSE);
-	tbstop->SetEnabled(kTRUE);
-	pbrate->SetBarColor("green");
-	pbdead->SetBarColor("red");
-	pbbuff->SetBarColor("orange");
 	return;
 }
 
-void MyMainFrame::Stop() {
-	int N;
-	char buffer[1000];
+void MyMainFrame::Start() {
+	//If a file is already opened I close it!
+	if(fout && (fout->IsZombie() == kFALSE)) {
+		fout->Write();
+		fout->Purge();
+		fout->Close();
+	}
+	if(fout) delete fout;
 	
-	if(zmq_send(requester, "stop", 5, 0) < 0) {
-		perror("[parent] zmq_send");
+	//I create hbkg BEFORE creating the output file because I don't want it in the file!
+	hbkg = new TH2F("hbkg", "", 1440, 0, 86400, 1000, 0, 10000);
+	
+	char buffer[1000];
+	do sprintf(buffer, "%s%05d.root", tepre->GetText(), fcnt++);
+	while(access(buffer, F_OK) == 0);
+	
+	fout = new TFile(buffer, "RECREATE");
+	if(fout->IsZombie()) {
+		lout->SetText("Bad output file. DISK STORAGE DISABLED!");
+		delete fout;
+		fout = nullptr;
+	}
+	else {
+		lout->SetText(Form("Writing on %s", buffer));
+		SetupTree();
+	}
+	SetupHistos();
+	
+	istat = STAT_STRT;
+	testat->SetText(stat[istat]);
+	
+	int N = Query(requester, "start", 6, buffer, 999, QTYPE_BUF);
+	if(N < 0) {
 		lout->SetText("Server connection failed");
+		PiDisconnect();
 		return;
 	}
+	else {
+		buffer[N] = '\0';
+		printf("[parent] START -> %s\n", buffer);
+	}
+	gettimeofday(&ti, NULL);
+	t0 = 0; lastts = 0; tall = 0; tdead = 0; tpaused = 0; lasttall = 0; lasttdead = 0; lastN = 0;
+	Nev = 0; Nerr = 0; lastup = 0; buffil = 0; Nbuf = 0;
 	
-	N = zmq_recv(requester, buffer, 999, 0);
+	int sec = (ti.tv_sec % 86400L) / 60L;
+	testart->SetText(Form("%02d:%02d", sec / 60, sec % 60));
+	testop->SetText("");
+	tbconn->SetEnabled(kFALSE);
+	cbbits->SetEnabled(kFALSE);
+	tepre->SetEnabled(kFALSE);
+	tbstart->SetText("PAUSE");
+	tbstop->SetEnabled(kTRUE);
+	tetot->SetText("0");
+	teerr->SetText("0");
+	teeri->SetText("");
+	teers->SetText("");
+	tedti->SetText("");
+	tedts->SetText("");
+	pbrate->Reset();
+	pbrate->SetBarColor("green");
+	pbdead->Reset();
+	pbdead->SetBarColor("red");
+	pbbuff->Reset();
+	pbbuff->SetBarColor("orange");
+	
+	kill(cproc, SIGUSR1);
+	return;
+}
+
+void MyMainFrame::Pause() {
+	istat = STAT_PAUS;
+	testat->SetText(stat[istat]);
+	
+	kill(cproc, SIGUSR2);
+	
+	char buffer[1000];
+	int N = Query(requester, "stop", 5, buffer, 999, QTYPE_BUF);
 	if(N < 0) {
-		perror("[parent] zmq_recv");
 		lout->SetText("Server connection failed");
+		PiDisconnect();
 		return;
 	}
 	buffer[N] = '\0';
 	printf("[parent]  STOP -> %s\n", buffer);
 	
-	istat = 1;
+	gettimeofday(&tp, NULL);
+	
+	tbstart->SetText("RESUME");
+	teeri->SetText("");
+	tedti->SetText("");
+	pbrate->SetBarColor("gray");
+	pbdead->SetBarColor("gray");
+	pbbuff->SetBarColor("gray");
+	return;
+}
+
+void MyMainFrame::Resume() {
+	istat = STAT_STRT;
 	testat->SetText(stat[istat]);
 	
-	tbstart->SetEnabled(kTRUE);
+	struct timeval tres, td;
+	char buffer[1000];
+	int N = Query(requester, "start", 6, buffer, 999, QTYPE_BUF);
+	if(N < 0) {
+		lout->SetText("Server connection failed");
+		PiDisconnect();
+		return;
+	}
+	else {
+		buffer[N] = '\0';
+		printf("[parent] START -> %s\n", buffer);
+	}
+	gettimeofday(&tres, NULL);
+	timersub(&tres, &tp, &td);
+	tpaused += ((uint64_t)(td.tv_sec) * 1000000L + (uint64_t)(td.tv_usec));
+	
+	tbstart->SetText("PAUSE");
+	pbrate->SetBarColor("green");
+	pbdead->SetBarColor("red");
+	pbbuff->SetBarColor("orange");
+	
+	kill(cproc, SIGUSR1);
+	return;
+}
+
+void MyMainFrame::Stop() {
+	istat = STAT_STOP;
+	testat->SetText(stat[istat]);
+	
+	kill(cproc, SIGUSR2);
+	
+	char buffer[1000];
+	int N = Query(requester, "stop", 5, buffer, 999, QTYPE_BUF);
+	if(N < 0) {
+		lout->SetText("Server connection failed");
+		PiDisconnect();
+		return;
+	}
+	buffer[N] = '\0';
+	printf("[parent]  STOP -> %s\n", buffer);
+	
+	struct timeval tf;
+	gettimeofday(&tf, NULL);
+	int sec = (tf.tv_sec % 86400L) / 60L;
+	testop->SetText(Form("%02d:%02d", sec / 60, sec % 60));
+	
+	if(hbkg) hbkg->Delete();
+	
+	if(fout && (fout->IsZombie() == kFALSE)) {
+		sprintf(buffer, "%s%05d.root", tepre->GetText(), fcnt);
+		lout->SetText(Form("Last output file was %s", buffer));
+		
+		fout->Write();
+		fout->Purge();
+		fout->Close();
+	}
+	if(fout) delete fout;
+	fout = nullptr;
+	
+	tbconn->SetEnabled(kTRUE);
+	tbstart->SetText("START");
 	tbstop->SetEnabled(kFALSE);
+	teupt->SetText("");
+	teeri->SetText("");
+	tedti->SetText("");
 	pbrate->SetPosition(4);
 	pbrate->SetBarColor("gray");
 	pbdead->SetPosition(1);
@@ -352,14 +536,21 @@ void MyMainFrame::Stop() {
 }
 
 void MyMainFrame::Fetch() {
-	if(istat != 2) return;
+	if(istat != STAT_STRT) {
+		printf("[parent] Data fetching not expected in status \"%s\"\n", stat[istat]);
+		kill(cproc, SIGUSR2);
+		return;
+	}
 	
-	int N;
 	struct Silevent data[SIZE];
 	struct timeval tf, td;
 	
-	zmq_send(requester, "send", 5, 0); //5 byte: c'è il carattere terminatore '\0'!!
-	N = zmq_recv(requester, data, SIZE * sizeof(struct Silevent), 0);
+	int N = Query(requester, "send", 5, data, SIZE * sizeof(struct Silevent), QTYPE_DAT);
+	if(N < 0) {
+		lout->SetText("Server connection failed");
+		PiDisconnect();
+		return;
+	}
 	
 	if(N % sizeof(struct Silevent)) {
 		printf("[parent] read fraction of event (size = %d)\n", N);
@@ -368,38 +559,43 @@ void MyMainFrame::Fetch() {
 	buffil += (double)N;
 	Nbuf += 1;
 	
+	ts = 0; dt = 0;
 	for(int j = 0; j < N; j++) {
-		if(t0 == 0) {
-			//always skip first "count" non-zero events (used as start time mark, first is usually not reliable)
-			t0 = data[j].ts + (uint64_t)(data[j].dt);
-			if(t0 && count) {
-				count--;
-				t0 = 0;
-			}
-			if(t0) {
-				gettimeofday(&ti, NULL);
+		if(t0 == 0L) {
+			if(data[j].ts > 100L) t0 = 1L;
+			continue;
+		}
+		else if(t0 == 1L) {
+			if(data[j].ts > 100L) {
+				t0 = data[j].ts + (uint64_t)(data[j].dt);
 				lastts = t0;
 			}
 			continue;
 		}
-		tall = data[j].ts + (uint64_t)(data[j].dt) - t0;
-		tdead += (uint64_t)(data[j].dt);
+		
+		tdead += (uint64_t)(data[j].dt / 1000L);
+		
 		hspe->Fill(data[j].val);
 		hdead->Fill((double)(data[j].dt) / 1000.);
 		hrate->Fill(((double)(data[j].ts - lastts)) / 1000000.);
 		Nev++;
+		if(data[j].emask) Nerr++;
 		lastts = data[j].ts;
 		
 		ts = data[j].ts; dt = data[j].dt;
 		val = data[j].val; emask = data[j].emask;
 		tree->Fill();
 	}
-	if(Nev == 0) return;
+	if(ts) {
+		tall = (ts + (uint64_t)dt - t0) / 1000L - tpaused;
+	}
 	
 	gettimeofday(&tf, NULL);
 	timersub(&tf, &ti, &td);
-	uint64_t msec = ((uint64_t)td.tv_usec + 1000000L * (uint64_t)td.tv_sec + 500L) / 1000L;
+	uint64_t msec = ((uint64_t)td.tv_usec + 1000000L * (uint64_t)td.tv_sec + 500L) / 1000L - (uint64_t)(tpaused / 1000L);
 	if(msec - lastup >= HISTUP) {
+		hspe->SetBinContent(1, ((double)tall) / 100000.);
+		hspe->SetBinContent(2, ((double)(tall - tdead)) / 100000.);
 		fEcanvas->GetCanvas()->Modified();
 		fEcanvas->GetCanvas()->Update();
 		fMini[1]->GetCanvas()->Modified();
@@ -413,6 +609,14 @@ void MyMainFrame::Fetch() {
 		double sec = (double)(tf.tv_sec % 86400L);
 		double grange = (sec < 600.) ? 600. : sec;
 		hbkg->GetXaxis()->SetRangeUser(grange - 600., grange);
+		
+		teupt->SetText(Form("%luh %02lum %02lus", msec / 3600000L, (msec % 3600000L) / 60000L, (msec % 60000L) / 1000L));
+		tetot->SetText(Form("%lu", Nev));
+		teerr->SetText(Form("%lu", Nerr));
+		teeri->SetText(Form("%.0lf ev/s", rate));
+		teers->SetText(Form("%.0lf ev/s", 1000. * ((double)Nev) / ((double)msec)));
+		tedti->SetText(Form("%5.1lf %%", 100. * dead));
+		if(tall > 0) tedts->SetText(Form("%5.1lf %%", 100. * ((double)tdead) / ((double)tall)));
 		
 		pbdead->Reset();
 		pbdead->SetPosition(dead);
@@ -442,18 +646,29 @@ void MyMainFrame::Fetch() {
 	return;
 }
 
-// void MyMainFrame::ManUpdate() {
-// 
-// 	return;
-// }
+void MyMainFrame::Test() {
+	if(tbtest->IsOn()) {
+		tehost->SetEnabled(kFALSE);
+		fTest = true;
+	}
+	else {
+		tehost->SetEnabled(kTRUE);
+		fTest = false;
+	}
+	return;
+}
 
 MyMainFrame::MyMainFrame(const TGWindow *p, UInt_t w, UInt_t h) {
-	me = this;
-	istat = 0;
-	context = nullptr;
+	me        = this;
+	istat     = STAT_NCFG;
+	fTest     = false;
+	fPause    = false;
+	context   = nullptr;
 	requester = nullptr;
-	fout = nullptr;
-	hbkg = nullptr;
+	fout      = nullptr;
+	hbkg      = nullptr;
+	qtype     = 0;
+	fcnt      = 0;
 	
 	FontStruct_t font_sml = gClient->GetFontByName("-*-arial-regular-r-*-*-16-*-*-*-*-*-iso8859-1");
 	FontStruct_t font_big = gClient->GetFontByName("-*-arial-regular-r-*-*-24-*-*-*-*-*-iso8859-1");
@@ -501,12 +716,24 @@ MyMainFrame::MyMainFrame(const TGWindow *p, UInt_t w, UInt_t h) {
 				
 				tehost = new TGTextEntry(hf21, "10.253.2.47");
 				tehost->SetFont(font_sml);
-				tehost->Resize(300, 24);
-				tehost->SetAlignment(kTextRight);
+				tehost->Resize(188, 24);
+				tehost->SetAlignment(kTextLeft);
 				hf21->AddFrame(tehost, new TGLayoutHints(kLHintsCenterY, 1, 2, 2, 2));
+				
+				tbtest = new TGCheckButton(hf21, "Test mode  ");
+// 				tbtest->SetText("Test mode");
+				tbtest->SetFont(font_sml);
+				tbtest->SetEnabled(kTRUE);
+				tbtest->Connect("Clicked()", "MyMainFrame", this, "Test()");
+				hf21->AddFrame(tbtest, new TGLayoutHints(kLHintsCenterY, 2, 2, 2, 2));
 			}
 			//hf21 ends
 			vf20->AddFrame(hf21, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX|kLHintsCenterY, 2, 2, 2, 2));
+			
+			tbconn = new TGTextButton(vf20, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+			tbconn->SetFont(font_big);
+			tbconn->Connect("Clicked()", "MyMainFrame", this, "Connect()");
+			vf20->AddFrame(tbconn, new TGLayoutHints(kLHintsCenterY, 4, 4, 4, 12));
 			
 			//hf22 starts
 			TGHorizontalFrame *hf22=new TGHorizontalFrame(vf20);
@@ -519,7 +746,7 @@ MyMainFrame::MyMainFrame(const TGWindow *p, UInt_t w, UInt_t h) {
 				for(int i = 0; i < 7; i++) cbbits->AddEntry(Form("%d", 10 + i), i);
 				cbbits->Select(3);
 				cbbits->Resize(300, 24);
-// 				cbbits->Connect("Selected(Int_t)", "MyMainFrame", this, "GasSwitch(Int_t)");
+				cbbits->SetEnabled(kFALSE);
 				hf22->AddFrame(cbbits, new TGLayoutHints(kLHintsCenterY, 1, 2, 2, 2));
 				
 			}
@@ -537,15 +764,11 @@ MyMainFrame::MyMainFrame(const TGWindow *p, UInt_t w, UInt_t h) {
 				tepre->SetFont(font_sml);
 				tepre->Resize(300, 24);
 				tepre->SetAlignment(kTextRight);
+				tepre->SetEnabled(kFALSE);
 				hf23->AddFrame(tepre, new TGLayoutHints(kLHintsCenterY, 1, 2, 2, 2));
 			}
 			//hf23 ends
 			vf20->AddFrame(hf23, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX|kLHintsCenterY, 2, 2, 2, 2));
-			
-			tbconn = new TGTextButton(vf20, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-			tbconn->SetFont(font_big);
-			tbconn->Connect("Clicked()", "MyMainFrame", this, "Connect()");
-			vf20->AddFrame(tbconn, new TGLayoutHints(kLHintsCenterY, 2, 2, 10, 2));
 			
 			lout = new TGLabel(vf20, "Ready to connect!");
 			lout->SetTextFont(font_sml);
@@ -554,37 +777,98 @@ MyMainFrame::MyMainFrame(const TGWindow *p, UInt_t w, UInt_t h) {
 			//hf24 starts
 			TGHorizontalFrame *hf24=new TGHorizontalFrame(vf20);
 			{
-				tbstart = new TGTextButton(hf24, "AAAAAAAAAAAAAAAAAAAAAAAAAAAl\nAAAAAAAAAAAAAAAAAAAAAAAAAAAl\nAAAAAAAAAAAAAAAAAAAAAAAAAAAl");
-				tbstart->SetFont(font_big);
-				tbstart->SetEnabled(kFALSE);
-				tbstart->Connect("Clicked()", "MyMainFrame", this, "Start()");
-				hf24->AddFrame(tbstart, new TGLayoutHints(kLHintsCenterY, 2, 1, 2, 2));
-				
-				tbstop = new TGTextButton(hf24, "AAAAAAAAAAAAAAAAAAAAAAAAAAAl\nAAAAAAAAAAAAAAAAAAAAAAAAAAAl\nAAAAAAAAAAAAAAAAAAAAAAAAAAAl");
-				tbstop->SetFont(font_big);
-				tbstop->SetEnabled(kFALSE);
-				tbstop->Connect("Clicked()", "MyMainFrame", this, "Stop()");
-				hf24->AddFrame(tbstop, new TGLayoutHints(kLHintsCenterY, 1, 2, 2, 2));
-			}
-			//hf24 ends
-			vf20->AddFrame(hf24, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX|kLHintsCenterY, 2, 2, 2, 2));
-			
-			//hf25 starts
-			TGHorizontalFrame *hf25=new TGHorizontalFrame(vf20);
-			{
-				TGLabel *lstat = new TGLabel(hf25, "DAQ status");
+				TGLabel *lstat = new TGLabel(hf24, "DAQ status");
 				lstat->SetTextFont(font_big);
-				hf25->AddFrame(lstat, new TGLayoutHints(kLHintsCenterY|kLHintsExpandX, 2, 1, 2, 2));
+				hf24->AddFrame(lstat, new TGLayoutHints(kLHintsCenterY|kLHintsExpandX, 2, 1, 2, 2));
 				
-				testat = new TGTextEntry(hf25, stat[istat]);
+				testat = new TGTextEntry(hf24, stat[istat]);
 				testat->SetFont(font_big);
 				testat->Resize(300, 32);
 				testat->SetEnabled(kFALSE);
 				testat->SetAlignment(kTextCenterX);
-				hf25->AddFrame(testat, new TGLayoutHints(kLHintsCenterY, 1, 2, 2, 2));
+				hf24->AddFrame(testat, new TGLayoutHints(kLHintsCenterY, 1, 2, 2, 2));
+			}
+			//hf24 ends
+			vf20->AddFrame(hf24, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX|kLHintsCenterY, 2, 2, 10, 2));
+			
+			//hf25 starts
+			TGHorizontalFrame *hf25=new TGHorizontalFrame(vf20);
+			{
+				tbstart = new TGTextButton(hf25, "AAAAAAAAllllllllllllllllll\nA");
+				tbstart->SetFont(font_big);
+				tbstart->SetEnabled(kFALSE);
+				tbstart->Connect("Clicked()", "MyMainFrame", this, "MultiButton()");
+				hf25->AddFrame(tbstart, new TGLayoutHints(0, 2, 1, 2, 0));
+				
+				tbstop = new TGTextButton(hf25, "AAAAAAAAllllllllllllllllll\nA");
+				tbstop->SetFont(font_big);
+				tbstop->SetEnabled(kFALSE);
+				tbstop->Connect("Clicked()", "MyMainFrame", this, "Stop()");
+				hf25->AddFrame(tbstop, new TGLayoutHints(0, 1, 2, 2, 1));
 			}
 			//hf25 ends
-			vf20->AddFrame(hf25, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX|kLHintsCenterY, 2, 2, 2, 20));
+			vf20->AddFrame(hf25, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX, 2, 2, 2, 0));
+			
+			//hf25bis starts
+			TGHorizontalFrame *hf25bis=new TGHorizontalFrame(vf20);
+			{
+				testart = new TGTextEntry(hf25bis, "");
+				testart->SetFont(font_big);
+				testart->Resize(226, 56);
+				testart->SetEnabled(kFALSE);
+				testart->SetAlignment(kTextCenterX);
+				hf25bis->AddFrame(testart, new TGLayoutHints(0, 2, 1, 0, 2));
+				
+				testop = new TGTextEntry(hf25bis, "");
+				testop->SetFont(font_big);
+				testop->Resize(226, 56);
+				testop->SetEnabled(kFALSE);
+				testop->SetAlignment(kTextCenterX);
+				hf25bis->AddFrame(testop, new TGLayoutHints(0, 1, 2, 0, 2));
+			}
+			//hf25bis ends
+			vf20->AddFrame(hf25bis, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX, 2, 2, 0, 20));
+			
+			//hf25ter starts
+			TGHorizontalFrame *hf25ter=new TGHorizontalFrame(vf20);
+			{
+				TGLabel *lupt = new TGLabel(hf25ter, "Uptime");
+				lupt->SetTextFont(font_sml);
+				hf25ter->AddFrame(lupt, new TGLayoutHints(kLHintsCenterY|kLHintsExpandX, 2, 1, 2, 2));
+				
+				teupt = new TGTextEntry(hf25ter, "");
+				teupt->SetFont(font_sml);
+				teupt->Resize(300, 24);
+				teupt->SetEnabled(kFALSE);
+				teupt->SetAlignment(kTextCenterX);
+				hf25ter->AddFrame(teupt, new TGLayoutHints(kLHintsCenterY, 1, 2, 2, 2));
+			}
+			//hf25ter ends
+			vf20->AddFrame(hf25ter, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX, 2, 2, 2, 2));
+			
+			//hf25quater starts
+			TGHorizontalFrame *hf25quater=new TGHorizontalFrame(vf20);
+			{
+				TGLabel *lnev = new TGLabel(hf25quater, "Events (tot / err)");
+				lnev->SetTextFont(font_sml);
+				hf25quater->AddFrame(lnev, new TGLayoutHints(kLHintsCenterY|kLHintsExpandX, 2, 1, 2, 2));
+				
+				tetot = new TGTextEntry(hf25quater, "");
+				tetot->SetFont(font_sml);
+				tetot->Resize(149, 24);
+				tetot->SetEnabled(kFALSE);
+				tetot->SetAlignment(kTextRight);
+				hf25quater->AddFrame(tetot, new TGLayoutHints(kLHintsCenterY, 1, 1, 2, 2));
+				
+				teerr = new TGTextEntry(hf25quater, "");
+				teerr->SetFont(font_sml);
+				teerr->Resize(149, 24);
+				teerr->SetEnabled(kFALSE);
+				teerr->SetAlignment(kTextRight);
+				hf25quater->AddFrame(teerr, new TGLayoutHints(kLHintsCenterY, 1, 2, 2, 2));
+			}
+			//hf25quater ends
+			vf20->AddFrame(hf25quater, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX, 2, 2, 2, 2));
 			
 			//hf26 starts
 			TGHorizontalFrame *hf26=new TGHorizontalFrame(vf20);
@@ -603,6 +887,30 @@ MyMainFrame::MyMainFrame(const TGWindow *p, UInt_t w, UInt_t h) {
 			//hf26 ends
 			vf20->AddFrame(hf26, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX|kLHintsCenterY, 2, 2, 2, 2));
 			
+			//hf26bis starts
+			TGHorizontalFrame *hf26bis=new TGHorizontalFrame(vf20);
+			{
+				TGLabel *levs = new TGLabel(hf26bis, "Ev. rate (inst / intg)");
+				levs->SetTextFont(font_sml);
+				hf26bis->AddFrame(levs, new TGLayoutHints(kLHintsCenterY|kLHintsExpandX, 2, 1, 2, 2));
+				
+				teeri = new TGTextEntry(hf26bis, "");
+				teeri->SetFont(font_sml);
+				teeri->Resize(149, 24);
+				teeri->SetEnabled(kFALSE);
+				teeri->SetAlignment(kTextRight);
+				hf26bis->AddFrame(teeri, new TGLayoutHints(kLHintsCenterY, 1, 1, 2, 2));
+				
+				teers = new TGTextEntry(hf26bis, "");
+				teers->SetFont(font_sml);
+				teers->Resize(149, 24);
+				teers->SetEnabled(kFALSE);
+				teers->SetAlignment(kTextRight);
+				hf26bis->AddFrame(teers, new TGLayoutHints(kLHintsCenterY, 1, 2, 2, 2));
+			}
+			//hf26bis ends
+			vf20->AddFrame(hf26bis, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX, 2, 2, 2, 2));
+			
 			//hf27 starts
 			TGHorizontalFrame *hf27=new TGHorizontalFrame(vf20);
 			{
@@ -620,6 +928,30 @@ MyMainFrame::MyMainFrame(const TGWindow *p, UInt_t w, UInt_t h) {
 			//hf27 ends
 			vf20->AddFrame(hf27, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX|kLHintsCenterY, 2, 2, 2, 2));
 			
+			//hf27bis starts
+			TGHorizontalFrame *hf27bis=new TGHorizontalFrame(vf20);
+			{
+				TGLabel *ldt = new TGLabel(hf27bis, "Dead time (inst / intg)");
+				ldt->SetTextFont(font_sml);
+				hf27bis->AddFrame(ldt, new TGLayoutHints(kLHintsCenterY|kLHintsExpandX, 2, 1, 2, 2));
+				
+				tedti = new TGTextEntry(hf27bis, "");
+				tedti->SetFont(font_sml);
+				tedti->Resize(149, 24);
+				tedti->SetEnabled(kFALSE);
+				tedti->SetAlignment(kTextRight);
+				hf27bis->AddFrame(tedti, new TGLayoutHints(kLHintsCenterY, 1, 1, 2, 2));
+				
+				tedts = new TGTextEntry(hf27bis, "");
+				tedts->SetFont(font_sml);
+				tedts->Resize(149, 24);
+				tedts->SetEnabled(kFALSE);
+				tedts->SetAlignment(kTextRight);
+				hf27bis->AddFrame(tedts, new TGLayoutHints(kLHintsCenterY, 1, 2, 2, 2));
+			}
+			//hf27bis ends
+			vf20->AddFrame(hf27bis, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX, 2, 2, 2, 2));
+			
 			//hf28 starts
 			TGHorizontalFrame *hf28=new TGHorizontalFrame(vf20);
 			{
@@ -636,24 +968,6 @@ MyMainFrame::MyMainFrame(const TGWindow *p, UInt_t w, UInt_t h) {
 			}
 			//hf28 ends
 			vf20->AddFrame(hf28, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX|kLHintsCenterY, 2, 2, 2, 2));
-			
-			//hf29 starts
-			TGHorizontalFrame *hf29=new TGHorizontalFrame(vf20);
-			{
-				tbmanu = new TGTextButton(hf29, "AAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAA");
-				tbmanu->SetFont(font_sml);
-				tbmanu->SetEnabled(kFALSE);
-// 				tbmanu->Connect("Clicked()", "MyMainFrame", this, "Calculate()");
-				hf29->AddFrame(tbmanu, new TGLayoutHints(kLHintsCenterY, 2, 2, 2, 2));
-				
-				tbauto = new TGCheckButton(hf29, "AAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAA");
-				tbauto->SetFont(font_sml);
-				tbauto->SetEnabled(kFALSE);
-// 				tbauto->Connect("Clicked()", "MyMainFrame", this, "Calculate()");
-				hf29->AddFrame(tbauto, new TGLayoutHints(kLHintsCenterY, 2, 2, 2, 2));
-			}
-			//hf29 ends
-			vf20->AddFrame(hf29, new TGLayoutHints(kLHintsExpandX|kLHintsCenterX|kLHintsCenterY, 2, 2, 20, 2));
 			
 			tbexit = new TGTextButton(vf20, "AAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
 			tbexit->Connect("Clicked()", "MyMainFrame", this, "Terminate()");
@@ -679,10 +993,10 @@ MyMainFrame::MyMainFrame(const TGWindow *p, UInt_t w, UInt_t h) {
 	fMain->MapWindow();
 	
 	tbconn->SetText("\nCONNECT                 ");
-	tbstart->SetText("\nSTART            ");
-	tbstop->SetText("\nSTOP          ");
-	tbmanu->SetText("Manual update");
-	tbauto->SetText("AUTO update");
+	tbstart->SetText("START");
+	tbstop->SetText("STOP");
+// 	tbmanu->SetText("Manual update");
+// 	tbauto->SetText("AUTO update");
 	tbexit->SetText("&Quit DAQ");
 	
 	return;
@@ -699,38 +1013,10 @@ MyMainFrame::~MyMainFrame() {
 }
 
 void MyMainFrame::Terminate() {
-	kill(cproc, SIGUSR2);
+	PiDisconnect();
 	usleep(10000);
-	
-	if(istat == 2) Stop();
-	
-	if(istat > 0) {
-		if(zmq_send(requester, "exit", 5, 0) < 0) {
-			perror("[parent] zmq_send");
-		}
-		
-		char buffer[1000];
-		int N = zmq_recv(requester, buffer, 999, 0);
-		if(N < 0) {
-			perror("[parent] zmq_recv");
-		}
-		else {
-			buffer[N] = '\0';
-			printf("[parent]  EXIT -> %s\n", buffer);
-		}
-	}
-	
-	if(requester) zmq_close(requester);
-	if(context) zmq_ctx_destroy(context);
-	
-	if(hbkg) hbkg->Delete();
-	
-	if(fout && (fout->IsZombie() == kFALSE)) {
-		fout->Write();
-		fout->Purge();
-		fout->Close();
-	}
-	if(fout) delete fout;
+	kill(cproc, SIGTERM);
+	usleep(10000);
 	
 	fMain->Cleanup();
 	delete fMain;
@@ -748,19 +1034,22 @@ int main(int argc, char **argv) {
 	else {
 		if(cproc==0) { //processo figlio
 			pid_t pproc = getppid();
-			go = true;
-			signal(SIGINT, handlesig_child);
+			go  = true;
+			fen = false;
+			signal(SIGINT,  handlesig_child);
+			signal(SIGTERM, handlesig_child);
+			signal(SIGUSR1, handlesig_child);
 			signal(SIGUSR2, handlesig_child);
-			sleep(2);
 			for(;go;) {
 				usleep(FETCHINT);
-				kill(pproc, SIGUSR1);
+				if(fen) kill(pproc, SIGUSR1);
 			}
 			printf("[child ] End of process\n");
 			return 0;
 		}
 		else { //processo genitore
-			signal(SIGINT, handlesig_parent);
+			signal(SIGINT,  handlesig_parent);
+			signal(SIGTERM, handlesig_parent);
 			signal(SIGUSR1, handlesig_parent);
 			TApplication theApp("App", &argc, argv);
 			new MyMainFrame(gClient->GetRoot(), WINDOWX, WINDOWY);
